@@ -1,26 +1,6 @@
-#include <signal.h>
-#include <iostream>
-#include <string>
-#include <sstream>
-#include <Helpers/Misc.hpp>
-#include <Helpers/Socket.hpp>
-#include <Helpers/AddrInfo.hpp>
-#include <Helpers/Tokenizer.hpp>
-
-/* You will to add includes here */
-
-// Enable if you want debugging to be printed, see examble below.
-// Alternative, pass CFLAGS=-DDEBUG to make, make CFLAGS=-DDEBUG
-//#define DEBUG
-
-
-// Included to get the support library
-
 int main(const int argc, char* argv[])
 {
-    // Ignore SIGPIPE because write()/read() are essentially equivalent to send()/recv()
-
-    // Check whether an argument has been passed
+    // Kontroll: argument
     if (argc < 2)
     {
         std::stringstream ss("Usage: %s protocol://server:port/path. ");
@@ -28,10 +8,10 @@ int main(const int argc, char* argv[])
         throw std::runtime_error(ss.str());
     }
 
-    // Getting the argument
+    // Hämta argumentet
     const std::string input = argv[1];
 
-    // Checking whether a triple slash has been
+    // Kolla om triple slash finns
     if (input.find("///") != std::string::npos)
     {
         std::stringstream ss("Invalid format: ");
@@ -39,41 +19,92 @@ int main(const int argc, char* argv[])
         throw std::runtime_error(ss.str());
     }
 
-    // Tokenize Input
+    // Tokenize input
     Helper::Tokenizer tokenizer;
     Helper::TokenizerData ipData = tokenizer.Tokenize(input);
 
     std::cout << "Host " << ipData.Hostname << ", and port " << ipData.Port << "\n";
 
-    // Check whether port is valid
+    // Kontrollera port
     Helper::Misc::CheckPortValidity(std::stoi(ipData.Port));
 
-    // Setup socket hints
+    // Socket hints
     addrinfo socketHints{};
     socketHints.ai_family = AF_UNSPEC;
 
+    // --- UDP ---
     if (ipData.Protocol == "UDP" || ipData.Protocol == "udp")
     {
         socketHints.ai_socktype = SOCK_DGRAM;
     }
-
-    if (ipData.Protocol == "TCP" || ipData.Protocol == "tcp")
+    // --- TCP ---
+    else if (ipData.Protocol == "TCP" || ipData.Protocol == "tcp")
     {
         socketHints.ai_socktype = SOCK_STREAM;
     }
+    // --- ANY ---
+    else if (ipData.Protocol == "ANY" || ipData.Protocol == "any")
+    {
+        std::cout << "Protocol 'any' explicitly supported.\n";
+        std::cout << "Trying TCP first...\n";
 
-    // Establish server information
+        socketHints.ai_socktype = SOCK_STREAM;
+        try
+        {
+            Helper::AddrInfo serverInformation(ipData.Hostname, ipData.Port, socketHints);
+            Helper::Socket socket = Helper::Misc::CreateSocket(serverInformation);
+
+            if (ipData.Path == "BINARY" || ipData.Path == "binary")
+                Helper::Misc::PerformBinaryCommunication(socket);
+            else if (ipData.Path == "TEXT" || ipData.Path == "text")
+                Helper::Misc::PerformTextCommunication(socket);
+
+            exit(EXIT_SUCCESS);
+        }
+        catch (const std::exception& e)
+        {
+            std::cerr << "TCP failed: " << e.what() << "\n";
+            std::cout << "Trying UDP...\n";
+
+            socketHints.ai_socktype = SOCK_DGRAM;
+            try
+            {
+                Helper::AddrInfo serverInformation(ipData.Hostname, ipData.Port, socketHints);
+                Helper::Socket socket = Helper::Misc::CreateSocket(serverInformation);
+
+                if (ipData.Path == "BINARY" || ipData.Path == "binary")
+                    Helper::Misc::PerformBinaryCommunication(socket);
+                else if (ipData.Path == "TEXT" || ipData.Path == "text")
+                    Helper::Misc::PerformTextCommunication(socket);
+
+                exit(EXIT_SUCCESS);
+            }
+            catch (const std::exception& e2)
+            {
+                std::cerr << "UDP failed: " << e2.what() << "\n";
+                std::cerr << "Error: BOTH TCP and UDP failed under 'any'.\n";
+                exit(EXIT_FAILURE);
+            }
+        }
+    }
+
+    // --- Okänt protokoll ---
+    else
+    {
+        std::stringstream ss;
+        ss << "Error: Unknown or unsupported protocol: " << ipData.Protocol << "\n";
+        throw std::runtime_error(ss.str());
+    }
+
+    // Endast TCP/UDP-fallen når hit
     Helper::AddrInfo serverInformation(ipData.Hostname, ipData.Port, socketHints);
-
-    // Create Socket
     Helper::Socket socket = Helper::Misc::CreateSocket(serverInformation);
 
     if (ipData.Path == "BINARY" || ipData.Path == "binary")
     {
         Helper::Misc::PerformBinaryCommunication(socket);
     }
-
-    if (ipData.Path == "TEXT" || ipData.Path == "text")
+    else if (ipData.Path == "TEXT" || ipData.Path == "text")
     {
         Helper::Misc::PerformTextCommunication(socket);
     }
@@ -82,9 +113,9 @@ int main(const int argc, char* argv[])
 
 #ifdef DEBUG
     std::cout
-            << "Protocol: " << ipData.Protocol
-            << " Host: " << ipData.Hostname
-            << " Port: " << ipData.Port
-            << " Path: " << ipData.Path;
+        << "Protocol: " << ipData.Protocol
+        << " Host: " << ipData.Hostname
+        << " Port: " << ipData.Port
+        << " Path: " << ipData.Path;
 #endif
 }
