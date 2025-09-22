@@ -1,121 +1,174 @@
-int main(const int argc, char* argv[])
-{
-    // Kontroll: argument
-    if (argc < 2)
-    {
-        std::stringstream ss("Usage: %s protocol://server:port/path. ");
-        ss << argv[0] << "\n";
-        throw std::runtime_error(ss.str());
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <stdexcept>
+#include <netdb.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <cstring>
+#include <cstdlib>
+#include "protocol.h"
+#include "calcLib.h"
+
+void checkPortValidity(int port) {
+    if (port <= 0 || port > 65535) {
+        throw std::runtime_error("Invalid port number");
+    }
+}
+
+int createSocket(const std::string& host, const std::string& port, int socktype) {
+    addrinfo hints{}, *res;
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = socktype;
+
+    int rc = getaddrinfo(host.c_str(), port.c_str(), &hints, &res);
+    if (rc != 0) {
+        throw std::runtime_error("getaddrinfo failed");
     }
 
-    // Hämta argumentet
-    const std::string input = argv[1];
-
-    // Kolla om triple slash finns
-    if (input.find("///") != std::string::npos)
-    {
-        std::stringstream ss("Invalid format: ");
-        ss << input << "\n";
-        throw std::runtime_error(ss.str());
+    int sock = ::socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (sock < 0) {
+        throw std::runtime_error("socket() failed");
     }
 
-    // Tokenize input
-    Helper::Tokenizer tokenizer;
-    Helper::TokenizerData ipData = tokenizer.Tokenize(input);
-
-    std::cout << "Host " << ipData.Hostname << ", and port " << ipData.Port << "\n";
-
-    // Kontrollera port
-    Helper::Misc::CheckPortValidity(std::stoi(ipData.Port));
-
-    // Socket hints
-    addrinfo socketHints{};
-    socketHints.ai_family = AF_UNSPEC;
-
-    // --- UDP ---
-    if (ipData.Protocol == "UDP" || ipData.Protocol == "udp")
-    {
-        socketHints.ai_socktype = SOCK_DGRAM;
+    if (connect(sock, res->ai_addr, res->ai_addrlen) < 0) {
+        close(sock);
+        throw std::runtime_error("connect() failed");
     }
-    // --- TCP ---
-    else if (ipData.Protocol == "TCP" || ipData.Protocol == "tcp")
-    {
-        socketHints.ai_socktype = SOCK_STREAM;
+
+    freeaddrinfo(res);
+    return sock;
+}
+
+// ========== TEXT ==========
+void performTextCommunication(int sock) {
+    char buffer[1024];
+    int n = read(sock, buffer, sizeof(buffer)-1);
+    if (n <= 0) {
+        std::cout << "ERROR" << std::endl;
+        exit(EXIT_FAILURE);
     }
-    // --- ANY ---
-    else if (ipData.Protocol == "ANY" || ipData.Protocol == "any")
-    {
-        std::cout << "Protocol 'any' explicitly supported.\n";
-        std::cout << "Trying TCP first...\n";
+    buffer[n] = '\0';
+    std::string handshake(buffer);
 
-        socketHints.ai_socktype = SOCK_STREAM;
-        try
-        {
-            Helper::AddrInfo serverInformation(ipData.Hostname, ipData.Port, socketHints);
-            Helper::Socket socket = Helper::Misc::CreateSocket(serverInformation);
+    if (handshake.find("TEXT TCP 1.1") == std::string::npos) {
+        std::cout << "ERROR" << std::endl;
+        exit(EXIT_FAILURE);
+    }
+    write(sock, "OK\n", 3);
 
-            if (ipData.Path == "BINARY" || ipData.Path == "binary")
-                Helper::Misc::PerformBinaryCommunication(socket);
-            else if (ipData.Path == "TEXT" || ipData.Path == "text")
-                Helper::Misc::PerformTextCommunication(socket);
+    // Läs assignment
+    n = read(sock, buffer, sizeof(buffer)-1);
+    buffer[n] = '\0';
+    std::string assignment(buffer);
 
-            exit(EXIT_SUCCESS);
+    std::istringstream iss(assignment);
+    std::string op; double a,b;
+    iss >> op >> a >> b;
+    double result;
+    if (op=="add") result = a+b;
+    else if (op=="sub") result = a-b;
+    else if (op=="mul") result = a*b;
+    else if (op=="div") result = a/b;
+    else {
+        std::cout << "ERROR" << std::endl;
+        exit(EXIT_FAILURE);
+    }
+
+    std::ostringstream oss; oss<<result<<"\n";
+    write(sock, oss.str().c_str(), oss.str().size());
+
+    n = read(sock, buffer, sizeof(buffer)-1);
+    buffer[n] = '\0';
+    std::string response(buffer);
+
+    if (response.find("OK") != std::string::npos) {
+        std::cout << "OK" << std::endl;
+    } else {
+        std::cout << "ERROR" << std::endl;
+        exit(EXIT_FAILURE);
+    }
+}
+
+// ========== BINARY ==========
+void performBinaryCommunication(int sock) {
+    char buffer[1024];
+    int n = read(sock, buffer, sizeof(buffer)-1);
+    buffer[n] = '\0';
+    std::string handshake(buffer);
+
+    if (handshake.find("BINARY TCP 1.1") == std::string::npos) {
+        std::cout << "ERROR" << std::endl;
+        exit(EXIT_FAILURE);
+    }
+    write(sock, "OK\n", 3);
+
+    calcProtocol cp{};
+    if (read(sock, &cp, sizeof(cp)) != sizeof(cp)) {
+        std::cout << "ERROR" << std::endl;
+        exit(EXIT_FAILURE);
+    }
+
+    double result;
+    switch(cp.arith) {
+        case 1: result = ntohl(cp.inValue1) + ntohl(cp.inValue2); break;
+        case 2: result = ntohl(cp.inValue1) - ntohl(cp.inValue2); break;
+        case 3: result = ntohl(cp.inValue1) * ntohl(cp.inValue2); break;
+        case 4: result = (double)ntohl(cp.inValue1) / ntohl(cp.inValue2); break;
+        default: std::cout<<"ERROR"<<std::endl; exit(EXIT_FAILURE);
+    }
+
+    cp.result = htonl((int32_t)result);
+    write(sock, &cp, sizeof(cp));
+
+    n = read(sock, buffer, sizeof(buffer)-1);
+    buffer[n] = '\0';
+    std::string response(buffer);
+
+    if (response.find("OK") != std::string::npos) {
+        std::cout << "OK" << std::endl;
+    } else {
+        std::cout << "ERROR" << std::endl;
+        exit(EXIT_FAILURE);
+    }
+}
+
+int main(int argc, char* argv[]) {
+    if (argc < 2) {
+        std::cerr << "Usage: "<<argv[0]<<" protocol://server:port/path\n";
+        return 1;
+    }
+
+    // Enkel tokenizer: tcp://127.0.0.1:5000/text
+    std::string input = argv[1];
+    std::string protocol = input.substr(0, input.find("://"));
+    std::string rest = input.substr(input.find("://")+3);
+
+    std::string hostport = rest.substr(0, rest.find("/"));
+    std::string path = rest.substr(rest.find("/")+1);
+    std::string host = hostport.substr(0, hostport.find(":"));
+    std::string port = hostport.substr(hostport.find(":")+1);
+
+    checkPortValidity(std::stoi(port));
+
+    if (protocol == "tcp") {
+        int sock = createSocket(host, port, SOCK_STREAM);
+        if (path == "text") performTextCommunication(sock);
+        else if (path == "binary") performBinaryCommunication(sock);
+    } else if (protocol == "any") {
+        try {
+            int sock = createSocket(host, port, SOCK_STREAM);
+            if (path == "text") performTextCommunication(sock);
+            else if (path == "binary") performBinaryCommunication(sock);
+        } catch (...) {
+            int sock = createSocket(host, port, SOCK_DGRAM);
+            if (path == "text") performTextCommunication(sock);
+            else if (path == "binary") performBinaryCommunication(sock);
         }
-        catch (const std::exception& e)
-        {
-            std::cerr << "TCP failed: " << e.what() << "\n";
-            std::cout << "Trying UDP...\n";
-
-            socketHints.ai_socktype = SOCK_DGRAM;
-            try
-            {
-                Helper::AddrInfo serverInformation(ipData.Hostname, ipData.Port, socketHints);
-                Helper::Socket socket = Helper::Misc::CreateSocket(serverInformation);
-
-                if (ipData.Path == "BINARY" || ipData.Path == "binary")
-                    Helper::Misc::PerformBinaryCommunication(socket);
-                else if (ipData.Path == "TEXT" || ipData.Path == "text")
-                    Helper::Misc::PerformTextCommunication(socket);
-
-                exit(EXIT_SUCCESS);
-            }
-            catch (const std::exception& e2)
-            {
-                std::cerr << "UDP failed: " << e2.what() << "\n";
-                std::cerr << "Error: BOTH TCP and UDP failed under 'any'.\n";
-                exit(EXIT_FAILURE);
-            }
-        }
+    } else {
+        std::cerr << "Unknown protocol: "<<protocol<<"\n";
+        return 1;
     }
 
-    // --- Okänt protokoll ---
-    else
-    {
-        std::stringstream ss;
-        ss << "Error: Unknown or unsupported protocol: " << ipData.Protocol << "\n";
-        throw std::runtime_error(ss.str());
-    }
-
-    // Endast TCP/UDP-fallen når hit
-    Helper::AddrInfo serverInformation(ipData.Hostname, ipData.Port, socketHints);
-    Helper::Socket socket = Helper::Misc::CreateSocket(serverInformation);
-
-    if (ipData.Path == "BINARY" || ipData.Path == "binary")
-    {
-        Helper::Misc::PerformBinaryCommunication(socket);
-    }
-    else if (ipData.Path == "TEXT" || ipData.Path == "text")
-    {
-        Helper::Misc::PerformTextCommunication(socket);
-    }
-
-    exit(EXIT_SUCCESS);
-
-#ifdef DEBUG
-    std::cout
-        << "Protocol: " << ipData.Protocol
-        << " Host: " << ipData.Hostname
-        << " Port: " << ipData.Port
-        << " Path: " << ipData.Path;
-#endif
+    return 0;
 }
