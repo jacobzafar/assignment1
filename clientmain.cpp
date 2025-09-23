@@ -31,6 +31,15 @@ int createSocket(const std::string& host, const std::string& port, int socktype)
         throw std::runtime_error("socket() failed");
     }
 
+    // Timeout inställning (5 sekunder timeout)
+    struct timeval timeout;
+    timeout.tv_sec = 5;  // Timeout på 5 sekunder
+    timeout.tv_usec = 0;
+
+    if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
+        std::cerr << "setsockopt() failed for receiving timeout" << std::endl;
+    }
+
     if (connect(sock, res->ai_addr, res->ai_addrlen) < 0) {
         close(sock);
         throw std::runtime_error("connect() failed");
@@ -41,11 +50,18 @@ int createSocket(const std::string& host, const std::string& port, int socktype)
 }
 
 // ========== TEXT ==========
+
 void performTextCommunication(int sock) {
     char buffer[1024];
     int n = read(sock, buffer, sizeof(buffer)-1);
     if (n <= 0) {
-        std::cout << "ERROR" << std::endl;
+        if (n == 0) {
+            std::cout << "Connection closed by server." << std::endl;
+        } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            std::cout << "ERROR: Timeout occurred." << std::endl;
+        } else {
+            std::cout << "ERROR" << std::endl;
+        }
         exit(EXIT_FAILURE);
     }
     buffer[n] = '\0';
@@ -91,6 +107,7 @@ void performTextCommunication(int sock) {
 }
 
 // ========== BINARY ==========
+
 void performBinaryCommunication(int sock) {
     char buffer[1024];
     int n = read(sock, buffer, sizeof(buffer)-1);
