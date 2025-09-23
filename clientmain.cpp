@@ -10,12 +10,14 @@
 #include "protocol.h"
 #include "calcLib.h"
 
+// Kontrollera att porten är giltig
 void checkPortValidity(int port) {
     if (port <= 0 || port > 65535) {
         throw std::runtime_error("Invalid port number");
     }
 }
 
+// Skapa socket och ställ in timeout (2 sekunder)
 int createSocket(const std::string& host, const std::string& port, int socktype) {
     addrinfo hints{}, *res;
     hints.ai_family = AF_UNSPEC;
@@ -31,14 +33,11 @@ int createSocket(const std::string& host, const std::string& port, int socktype)
         throw std::runtime_error("socket() failed");
     }
 
-    // Timeout inställning (5 sekunder timeout)
-    struct timeval timeout;
-    timeout.tv_sec = 5;  // Timeout på 5 sekunder
-    timeout.tv_usec = 0;
-
-    if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
-        std::cerr << "setsockopt() failed for receiving timeout" << std::endl;
-    }
+    // Timeout inställning (2 sekunder)
+    struct timeval tv;
+    tv.tv_sec = 2;  // Timeout på 2 sekunder
+    tv.tv_usec = 0;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));  // Ingen error check
 
     if (connect(sock, res->ai_addr, res->ai_addrlen) < 0) {
         close(sock);
@@ -49,11 +48,12 @@ int createSocket(const std::string& host, const std::string& port, int socktype)
     return sock;
 }
 
-// ========== TEXT ==========
-
+// ========== TEXT-kommunikation ==========
 void performTextCommunication(int sock) {
     char buffer[1024];
     int n = read(sock, buffer, sizeof(buffer)-1);
+
+    // Kontrollera om read() returnerar -1, vilket indikerar timeout
     if (n <= 0) {
         if (n == 0) {
             std::cout << "Connection closed by server." << std::endl;
@@ -64,6 +64,7 @@ void performTextCommunication(int sock) {
         }
         exit(EXIT_FAILURE);
     }
+
     buffer[n] = '\0';
     std::string handshake(buffer);
 
@@ -71,10 +72,15 @@ void performTextCommunication(int sock) {
         std::cout << "ERROR" << std::endl;
         exit(EXIT_FAILURE);
     }
+
     write(sock, "OK\n", 3);
 
     // Läs assignment
     n = read(sock, buffer, sizeof(buffer)-1);
+    if (n <= 0) {
+        std::cout << "ERROR: Timeout or Connection Failed" << std::endl;
+        exit(EXIT_FAILURE);
+    }
     buffer[n] = '\0';
     std::string assignment(buffer);
 
@@ -95,6 +101,10 @@ void performTextCommunication(int sock) {
     write(sock, oss.str().c_str(), oss.str().size());
 
     n = read(sock, buffer, sizeof(buffer)-1);
+    if (n <= 0) {
+        std::cout << "ERROR: Timeout or Connection Failed" << std::endl;
+        exit(EXIT_FAILURE);
+    }
     buffer[n] = '\0';
     std::string response(buffer);
 
@@ -106,11 +116,14 @@ void performTextCommunication(int sock) {
     }
 }
 
-// ========== BINARY ==========
-
+// ========== BINARY-kommunikation ==========
 void performBinaryCommunication(int sock) {
     char buffer[1024];
     int n = read(sock, buffer, sizeof(buffer)-1);
+    if (n <= 0) {
+        std::cout << "ERROR: Timeout or Connection Failed" << std::endl;
+        exit(EXIT_FAILURE);
+    }
     buffer[n] = '\0';
     std::string handshake(buffer);
 
@@ -139,6 +152,10 @@ void performBinaryCommunication(int sock) {
     write(sock, &cp, sizeof(cp));
 
     n = read(sock, buffer, sizeof(buffer)-1);
+    if (n <= 0) {
+        std::cout << "ERROR: Timeout or Connection Failed" << std::endl;
+        exit(EXIT_FAILURE);
+    }
     buffer[n] = '\0';
     std::string response(buffer);
 
